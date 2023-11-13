@@ -10,10 +10,10 @@ locus_df <- as.data.frame(googlesheets4::read_sheet(ss=ss_id, sheet='loci'))
 # Здесь выставляешь путь к папке проекта
 proj_path <- ''
 
-# здесь нужно из него data.frame сделать
+# data.frame делаем
 locus_df <- as.data.frame(locus_df)
 
-# здесь мутишь из него объект вида GRanges 
+# преобразуешь в GRanges 
 
 loci <- GRanges(locus_df$chr, IRanges(start=locus_df$start, end=locus_df$end, names=locus_df$Locus, bs_type=locus_df$bs_type))
 
