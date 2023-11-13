@@ -1,3 +1,10 @@
+#' @import googlesheets4
+#' @import plyr
+#' @import ape
+#' @import reshape2
+#' @import phangorn
+#' @import stringr
+
 require(googlesheets4)
 require(plyr)
 require(ape)
@@ -14,11 +21,8 @@ require(sangeranalyseR)
 require(BSgenome.Hsapiens.UCSC.hg19)
 
 
-devtools::load_all('/media/HEAP-EPI/R/CRAN/rUtils')
 
-
-
-
+#devtools::load_all('/media/HEAP-EPI/R/CRAN/rUtils')
 
 
 plot_raw_chromo <- function(abif,...) {
@@ -29,7 +33,7 @@ plot_raw_chromo <- function(abif,...) {
 }
 
 
-seq_list <- function(fn_list, type){
+get_seq_list <- function(fn_list, type){
   
   #fn <- blood_end_fn_list[1]
   res_list <- llply(fn_list, function(fn){ 
@@ -43,7 +47,8 @@ seq_list <- function(fn_list, type){
     }
     ab1
   })
-  names(res_list) <- paste0(type,str_match(basename(fn_list),'(\\d+)-')[,2])
+  # names(res_list) <- paste0(type,str_match(basename(fn_list),'(\\d+)-')[,2])
+  names(res_list) <- llply(res_list, function(ab1){ ab1@data$SMPL.1 })
   res_list
 }
 
@@ -80,12 +85,10 @@ peakCorr <- function(coef, peaks, refBS) {
 }
 
 
-optCorr <- function(peaks, nobisDir, refBS, coef) {
-  
-  
+optCorr <- function(peaks, nometh_Dir, refBS, coef) {
+
   # peaks <- exp_peaks_nobis
-  
-  
+
   peaks_corrected <- do.call(cbind.data.frame,
                              llply(colnames(peaks), function(nobis, peaks, nobisDir, refBS, coef) {
                                
@@ -94,8 +97,8 @@ optCorr <- function(peaks, nobisDir, refBS, coef) {
                                coef_corr <- optim(coef, cost_funct, gr='CG', peaks = peaks[,nobis], nobisDir = nobisDir, refBS = refBS)$par
                                nobis_corr <- peakCorr(coef_corr, peaks[,nobis], refBS)
                                
-                             }, peaks, nobisDir, refBS, coef))
-  
+                             }, peaks, nometh_Dir, refBS, coef))
+  names(peaks_corrected) <- names(peaks)
   peaks_corrected
 }
 
@@ -121,13 +124,11 @@ mask_cpg <- function(refG, refBS) {
   cpg_mask  
 }
 
-
+#' @description AM - AMplitude of basecall peaks (from ABIF file format specification)
 exp_peaks_am <- function(seq_list, refBS){
-  # matrix_align: последняя колонка - консенсус, а предпоследняя - референс
+  # matrix_align: last column - consensus, the one before last - reference.
   
   # seq_list <- seq_list_blood
-  
-  
   
   matrix_align <- {
     
@@ -139,10 +140,9 @@ exp_peaks_am <- function(seq_list, refBS){
     vec <- c(vec, refBS)
     vec <- DNAStringSet(vec)
     names(vec) <- c(names(seq_list), 'ref_seq')
-    res_align <- merge.reads(vec)
+    res_align <- sangeranalyseR::merge.reads(vec)
     matrix_align <- t(as.matrix(res_align$alignment))
   }
-  
   
   
   exp_col <- 1:(ncol(matrix_align) - 2)
@@ -155,7 +155,7 @@ exp_peaks_am <- function(seq_list, refBS){
   for (i in 1:nrow(matrix_align)) {
     # i <- 16
     exp_base <- as.character(matrix_align[i, exp_col])
-    ref_base <- as.character(matrix_align[i,ref_col])
+    ref_base <- as.character(matrix_align[i, ref_col])
     
     exp_pos <- exp_pos + ifelse(exp_base != '-', 1, 0)
     
@@ -317,8 +317,12 @@ plot_cpg_boxplot_old <- function(locus_obj, path) {
 
 # Умеет рисовать вискеры с помощью кастомной функции
 
+#' @export plot_cpg_boxplot
 plot_cpg_boxplot <- function(locus_obj, path, ci=0.95) {
   
+  if(class(locus_obj) != 'Locus'){
+    stop("Only 'Locus' class allowed.")
+  }
   
   # locus_obj <- batch_locuses[[6]]
   # path <- '/media/HEAP-EPI/Claes-Jensen/L59mid/'
@@ -327,31 +331,35 @@ plot_cpg_boxplot <- function(locus_obj, path, ci=0.95) {
   locus <- locus_obj$Locus
   path_loc <- file.path(path, locus)
   figures <- 'figures'
-  dir.create(file.path(path_loc, figures), showWarnings = FALSE)
+  dir.create(file.path(path, figures), showWarnings = FALSE)
   path_fig <- file.path(path_loc, figures)
-  
-  
-  scale_nobis_corr <- 100-(locus_obj$peaks_nobis_corr * t(locus_obj$nobisDscale))
+
+  scale_nometh_corr <- 100-(locus_obj$groups_corrected[[1]] * t(locus_obj$nometh_Dscale))
   #scale_blood_corr <- locus_obj$peaks_blood_corrected * t(locus_obj$nobisDscale)
   
+  cbind(scale_nometh_corr, locus_obj$groups_meth[[1]])
   
-  
-  df_locus <- cbind(locus_obj$seq_df, scale_nobis_corr, locus_obj$methBlood, locus_obj$methBloodP)
+  # df_locus <- cbind(locus_obj$seq_df, scale_nometh_corr, locus_obj$methBlood, locus_obj$methBloodP)
+  df_locus <- cbind(locus_obj$seq_df, locus_obj$groups_meth)
   df_cpg <- subset(df_locus, df_locus$CpG == 1)
   df_cpg$G_position <- paste0(df_cpg$G_position,'_|',df_cpg$refG)
-  gather_cols <- colnames(df_cpg)[6:ncol(df_cpg)]
+  gather_cols <- colnames(df_cpg)[(ncol(locus_obj$seq_df)+1):ncol(df_cpg)]
   keycol <- 'samples'
   valuecol <- 'Methylation'
-  df_cpg_wide <- tidyr::gather_(df_cpg, keycol,valuecol,gather_cols)
-  df_cpg_wide$groups <- gsub('[0-9]+','', df_cpg_wide$samples)
+  df_cpg_wide <- tidyr::gather_(df_cpg, keycol, valuecol, gather_cols)
+  df_cpg_wide$groups <- unlist(llply(str_split(df_cpg_wide$samples, '\\.'), '[[', 1))
+  # gsub('[0-9]+','', df_cpg_wide$samples) 
   #df_cpg_wide$groups <- factor(df_cpg_wide$groups, levels = c('nobisD','bloodN','bloodP'))
   df_cpg_wide$groups_genomics <- ifelse(df_cpg_wide$refG=='C', 
                                         paste0(df_cpg_wide$G_position,'_',dplyr::lead(df_cpg_wide$G_position,1)), 
                                         ifelse(df_cpg_wide$refG=='G', paste0(dplyr::lag(df_cpg_wide$G_position,1),'_',df_cpg_wide$G_position), 
                                                NA))
   plot_all <- ggplot(df_cpg_wide, aes(x=G_position, y=Methylation, fill=groups, color=groups))+
-   stat_summary(fun.data=custom_box, geom='boxplot', position = 'dodge2', fun.args = ci) + stat_summary(fun = custom_outlier, geom="point", position = position_dodge(width=1.2)) + 
-    stat_summary(fun.data = custom_box, geom = "errorbar", position='dodge2', fun.args = ci) + scale_fill_manual(values = c('green','red','gray')) + scale_color_manual(values = c('green','red','gray')) +
+    stat_summary(fun.data=custom_box, geom='boxplot', position = 'dodge2', fun.args = ci) + 
+    stat_summary(fun = custom_outlier, geom="point", position = position_dodge(width=1.2)) + 
+    stat_summary(fun.data = custom_box, geom = "errorbar", position='dodge2', fun.args = ci) + 
+    scale_fill_manual(values = c('gray','green','red')) + 
+    scale_color_manual(values = c('gray','green','red')) +
     theme(axis.text.x = element_text(size=15, angle = 55, hjust=1),
           axis.text.y = element_text(size=15), 
           legend.text = element_text(size=15),
@@ -368,27 +376,31 @@ plot_cpg_boxplot <- function(locus_obj, path, ci=0.95) {
   all_plot <- file.path(path_fig, paste0(locus,'_all_cpgs.png'))
   ggsave(filename = all_plot, plot=plot_all, dpi=300, width = 10, height = 6, units = 'in')
   
-  df_aggr <- aggregate(Methylation~G_position+groups, data=df_cpg_wide, FUN=customCI, ci=ci)
-  df_aggr$Locus <- locus
-  matr_aggr <- as.data.frame(df_aggr$Methylation)
-  df_aggr$Methylation <- NULL
-  df_aggr <- cbind(df_aggr, matr_aggr)
-  df_aggr <- df_aggr[,c(3,1,2,7,4,5,6)]
-  df_aggr_bloodN <- subset(df_aggr, df_aggr$groups == 'bloodN')
-  df_aggr_bloodP <- subset(df_aggr, df_aggr$groups == 'bloodP')
-  df_aggr_bloodP$groups <- NULL
-  df_aggr_bloodN$groups <- NULL
-  df_aggr_bloodP$Locus <- NULL
-  df_aggr_bloodP$lower <- NULL
-  df_aggr_bloodP$upper <- NULL
-  #df_aggr_bloodP$G_position <- NULL
-  df_aggr_bloodP$SD <- NULL
-  colnames(df_aggr_bloodP)[2] <- 'bloodP_Mean'
+  # --
+  # Собираем статистику для Вики Будадоржиевой
+  # df_aggr <- aggregate(Methylation~G_position+groups, data=df_cpg_wide, FUN=customCI, ci=ci)
+  # df_aggr$Locus <- locus
+  # matr_aggr <- as.data.frame(df_aggr$Methylation)
+  # df_aggr$Methylation <- NULL
+  # df_aggr <- cbind(df_aggr, matr_aggr)
+  # df_aggr <- df_aggr[,c(3,1,2,7,4,5,6)]
+  # df_aggr_bloodN <- subset(df_aggr, df_aggr$groups == 'bloodN')
+  # df_aggr_bloodP <- subset(df_aggr, df_aggr$groups == 'bloodP')
+  # df_aggr_bloodP$groups <- NULL
+  # df_aggr_bloodN$groups <- NULL
+  # df_aggr_bloodP$Locus <- NULL
+  # df_aggr_bloodP$lower <- NULL
+  # df_aggr_bloodP$upper <- NULL
+  # #df_aggr_bloodP$G_position <- NULL
+  # df_aggr_bloodP$SD <- NULL
+  # colnames(df_aggr_bloodP)[2] <- 'bloodP_Mean'
+  # 
+  # df_total <- merge(df_aggr_bloodN, df_aggr_bloodP, by='G_position')
+  # df_total$significance <- ifelse(df_total$bloodP_Mean > df_total$lower & df_total$bloodP_Mean < df_total$upper, 0, 1)
+  # 
+  # df_total
+  # --
   
-  df_total <- merge(df_aggr_bloodN, df_aggr_bloodP, by='G_position')
-  df_total$significance <- ifelse(df_total$bloodP_Mean > df_total$lower & df_total$bloodP_Mean < df_total$upper, 0, 1)
-  
-  df_total
   
   # df_cpg_split <- split(df_cpg_wide, df_cpg_wide$groups_genomics)  
   # llply(df_cpg_split, function(df_cpgs, locus, path_fig) {
